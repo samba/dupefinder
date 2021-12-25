@@ -190,6 +190,14 @@ def print_status(s):
 def escape(pathpart: str):
     return pathpart.replace('/', '//')
 
+
+def hash_md5(filename):
+    csum = hashlib.md5()
+    with open(filename, 'rb') as f:
+        while chunk := f.read(8192*4):
+            csum.update(chunk)
+    return csum
+
 def scandir(*dirpaths):
     yield True, "", None, None
     for d in dirpaths:
@@ -201,7 +209,7 @@ def scandir(*dirpaths):
             for name in files:
                 fpath = os.path.join(root, name)
                 logger.info('Scanning file: %s' % (fpath))
-                csum = hashlib.md5(open(fpath, 'rb').read())
+                csum = hash_md5(fpath)
                 yield False, escape(name), root, csum.hexdigest()
             for name in dirs:
                 fpath = os.path.join(root, name)
