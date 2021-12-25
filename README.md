@@ -5,7 +5,7 @@
 ## What problem does this solve?
 
 I have accumulated a pile of backup archives over my decades working in IT & tech.
-I need to clean these up for permanent cold-strage archival, remove duplicate and partial copies.
+I need to clean these up for permanent cold-storage archival, remove duplicate and partial copies.
 I'm a busy person and don't have time to manually inspect all of it, so I need a program to help me find the various replicas.
 
 ## How does this work?
@@ -15,7 +15,7 @@ Stores found checksums, with timestamps, in a SQLite database.
 Queries database to find:
 
 * fully duplicated files.
-* directories with >50% "similar" files, having the same name and same checksum.
+* "similar" directories with >50% files having the same name and same checksum.
 
 This tool is intended to be used to _inform_ cleanup/archivale processes. It does not delete anything directly.
 
