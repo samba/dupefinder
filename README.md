@@ -24,5 +24,5 @@ This tool is intended to be used to _inform_ cleanup/archivale processes. It doe
 * classifying scanned directories based on inferred _completeness_ by relative number of files
 * generating shell scripts to remove files and directories based on priority rules
 * indexing the inner contents of archives: tar.gz/bz2, zip, squashfs, iso
-
+* multi-threading the directory/file ingestion process
 
