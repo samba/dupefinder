@@ -6,6 +6,8 @@ import sys
 import hashlib
 import logging
 import contextlib
+import argparse
+import pathlib
 
 from difflib import SequenceMatcher
 from typing import List
@@ -180,7 +182,6 @@ def init_database(con):
     """
 
 
-
 def print_status(s):
     sys.stdout.write('\r')
     sys.stdout.write(s)
@@ -188,34 +189,66 @@ def print_status(s):
 
 
 def escape(pathpart: str):
-    return pathpart.replace('/', '//')
+    return pathpart.replace('/', '\\/')
 
 
-def hash_md5(filename):
-    csum = hashlib.md5()
+def _hash(filename, factory=hashlib.md5, block_count=128):
+    csum = factory()
+    readsize = block_count * (csum.block_size or 8192)
     with open(filename, 'rb') as f:
-        while chunk := f.read(8192*4):
+        for chunk in iter(lambda: f.read(readsize), b''):
             csum.update(chunk)
     return csum
 
-def scandir(*dirpaths):
-    yield True, "", None, None
+
+
+def exclusions(patterns):
+    """
+    >>> p = pathlib.PurePath
+    >>> x = exclusions(['**/a.py', '*/x*x.py', '**/x.py', '**/popcorn/**',
+    ...                 '**/pineapple'])
+    >>> list(filter(x, [p('/a.py'), p('b/x.py'), p('b/x2x.py')]))
+    []
+    >>> list(filter(x, [p('/a/pizza/popcorn/pineapple/a.py'), p('/a/none/y.py')]))
+    [PurePosixPath('/a/none/y.py')]
+    >>> list(filter(x, [p('/a/popcorn/z.py'), p('/a/popcorn'), p('/a/pineapple')]))
+    [PurePosixPath('/a/popcorn')]
+    """
+    return lambda p: not any(p.match(x) for x in patterns)
+
+
+def scandir(exclude, *dirpaths):
+    ex = exclusions(exclude)
+    yield True, "", None, None  # seed the root directory in the database
     for d in dirpaths:
         d = os.path.abspath(d)  # absolute path only
         logger.info('Scanning directory: %s', d)
-        yield True, "", None, None
-        yield True, d, "", None
-        for root, dirs, files in os.walk(d, topdown=True):
-            for name in files:
-                fpath = os.path.join(root, name)
-                logger.info('Scanning file: %s' % (fpath))
-                csum = hash_md5(fpath)
-                yield False, escape(name), root, csum.hexdigest()
-            for name in dirs:
-                fpath = os.path.join(root, name)
-                yield True, escape(name), root, None
 
-        print_status('\n')
+        yield True, d, "", None     # top level directories refer to root
+
+        for root, dirs, files in os.walk(d, topdown=True):
+
+            p = pathlib.PurePath(root)
+
+            # Produce PurePath instances that are not excluded
+            _files = list(filter(ex, [(p / f) for f in files]))
+            _dirs = list(filter(ex, [(p / d) for d in dirs]))
+
+            if (len(_files) == len(_dirs)) and len(_dirs) == 0:
+                dirs[:] = []  # terminate the iteration below this point
+
+            for fpath in _files:
+                logger.info('Scanning file: %s' % (fpath))
+                try:
+                    csum = _hash(str(fpath))
+                except (FileNotFoundError, PermissionError, IOError) as e:
+                    logger.error('Failed to read: %s', str(fpath))
+                    logger.error(e)
+                    continue
+                yield False, fpath.name, str(fpath.parent), csum.hexdigest()
+
+            for dpath in _dirs:
+                yield True, dpath.name, str(dpath.parent), None
 
 
 def loaddirs(paths):
@@ -256,7 +289,7 @@ def print_row(*rows: sqlite3.Row):
 
 
 def finddupefiles(parentpath=None):
-    """ Searches for duplicate files, limiting the results to those in a given path.."""
+    """ Searches for duplicate files, limiting the results to those in a given path."""
 
     with connect(DBNAME) as conn:
         with conn as cur:
@@ -295,7 +328,7 @@ def finddupedirs(parentpath=None, similarity=0.5):
         with conn as cur:
             if parentpath:
                 parentpath = os.path.abspath(parentpath) + os.sep
-        query = f"""
+        query = """
             SELECT * FROM parent_dir_match_score
             WHERE mscore > ?
         """
@@ -303,25 +336,42 @@ def finddupedirs(parentpath=None, similarity=0.5):
         yield from result.fetchall()
 
 def print_dupe_file(row: sqlite3.Row):
-    print(f"{row['checksum']:.32s}   {row['path']}")
+    print(f"{row['checksum']:.32s}\t{row['path']}")
 
 
 def print_dupe_dirs(row: sqlite3.Row):
     print(f"{row['path1']}\t{row['path2']}")
 
 
+def options(*args):
+    parser = argparse.ArgumentParser(
+        description=("Scans one or more directories to identify duplicates and"
+                     + " similar directories.")
+    )
+    parser.add_argument('-x', '--exclude', nargs=1, help='exclude patterns')
+    parser.add_argument('dirs', nargs='*', help='directories to scan')
+    return parser.parse_args(args)
+
+
+
 def main(verb, *args):
+    opts = options(*args)
 
     if verb == 'scan':
-        loaddirs(scandir(*args))
+        loaddirs(scandir(opts.exclude or [], *opts.dirs))
     elif verb == 'dupes':
-        kwargs = dict(parentpath=(args[0] if len(args) else None))
-        for r in finddupefiles(**kwargs):  # type: sqlite3.Row
-            print_dupe_file(r)
+        ex = exclusions(opts.exclude or [])
+        for p in (opts.dirs or [None]):
+            for r in finddupefiles(parentpath=p):  # type: sqlite3.Row
+                if not ex(pathlib.PurePath(r['path'])):
+                    print_dupe_file(r)
     elif verb == 'dupedirs':
-        kwargs = dict(parentpath=(args[0] if len(args) else None))
-        for r in finddupedirs(**kwargs):  # type: sqlite3.Row
-            print_dupe_dirs(r)
+        ex = exclusions(opts.exclude or [])
+        for p in (opts.dirs or [None]):
+            for r in finddupedirs(parentpath=p):  # type: sqlite3.Row
+                if not (ex(pathlib.PurePath(r['path1'])) and ex(pathlib.PurePath(r['path2']))):
+                    print_dupe_dirs(r)
+
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
